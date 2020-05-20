@@ -5,11 +5,14 @@ import time
 import xgboost as xgb
 from xgboost import plot_importance
 import matplotlib.pyplot as plt
-from model.get_data_path import get_filtered_data_path, get_test_data_path, get_train_data_path
+from model.get_data_path import get_test_data_path, get_train_data_path
 from sklearn.model_selection import train_test_split
 import os
 from util.show_save_result import ShowAndSave
 import logging
+from util.data_normalized import data_normalized
+from util.save_get_mean_std import save_mean_std,get_mean_std
+from model.params_dict import ParamsDict
 
 cur_path = os.path.abspath(os.path.dirname(__file__))
 logger = logging.getLogger()
@@ -41,7 +44,8 @@ class XgboostModel(ShowAndSave):
         self.model_kind = model_kind
         self.cur_path = cur_path
         self.init_param()
-        self.params = params
+        params_d = ParamsDict()
+        self.params = params_d.model_params[params_kind][model_kind]
         self.fj_model_kind = fj + '_' + model_kind
         self.model_file_name = self.fj_model_kind + '_xgb.model'
         self.feature_importance_path = self.single_model_path + 'feature_importance/'
@@ -49,16 +53,37 @@ class XgboostModel(ShowAndSave):
         self.n_estimator = n_estimator
         self.min_child_weight = min_child_weight
 
+    def get_std_mean(self, dscr):
+        ret_list = []
+        for i in range(len(self.params) - 1):
+            ret_list.append({'mean': dscr.loc['mean', self.params[i]], 'std': dscr.loc['std', self.params[i]]})
+            print(self.params[i] + ':',
+                  {'mean': dscr.loc['mean', self.params[i]], 'std': dscr.loc['std', self.params[i]]})
+        return ret_list
+
     def xgboostmodel(self, data_kind='train_data'):
-        self.data_kind = data_kind
-        data_file = get_train_data_path(self.fc, self.fj, self.model_kind, self.params_kind)
-        df = pd.read_csv(data_file, encoding='utf-8', index_col=0, low_memory=False)
-        logger.info(df.columns)
-        logger.info(df.shape)
-        traindata = df.iloc[:, :].values
-        x = traindata[:, :-1]
-        y = traindata[:, -1]
-        x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=0.8)  # list
+        self.data_kind=data_kind
+        train_data = get_train_data_path(self.fc, self.fj, self.model_kind, self.params_kind)
+        df = pd.read_csv(train_data, encoding='utf-8', index_col=0)
+        dscr = df.describe()
+        mean_std_dic = self.get_std_mean(dscr)
+        save_mean_std(mean_std_dic,self.fc,self.fj,self.model_kind)
+        data_set = df.iloc[:, :].values
+        x_dataset = data_set[:, :-1]
+        y_dataset = data_set[:, -1]
+        self.x_train_mean = None
+        self.x_train_std = None
+        normalized_data = data_normalized(x_dataset, mean_std_dic)
+        x_train, x_test, y_train, y_test = train_test_split(normalized_data, y_dataset, train_size=0.8)
+        # self.data_kind = data_kind
+        # data_file = get_train_data_path(self.fc, self.fj, self.model_kind, self.params_kind)
+        # df = pd.read_csv(data_file, encoding='utf-8', index_col=0, low_memory=False)
+        # logger.info(df.columns)
+        # logger.info(df.shape)
+        # traindata = df.iloc[:, :].values
+        # x = traindata[:, :-1]
+        # y = traindata[:, -1]
+        # x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=0.8)  # list
         logger.info('when training,train data number:{}'.format(str(len(y_train))))
         logger.info('when training,test data number:{}'.format(len(y_test)))
         logger.info('training model:{}'.format(self.model_kind))
@@ -73,9 +98,10 @@ class XgboostModel(ShowAndSave):
         raw_model.save_model(self.model_path + self.model_file_name)
         pred = raw_model.predict(x_test)
         plot_importance(raw_model)
-        if not os.path.exists(self.feature_importance_path):
-            os.makedirs(self.feature_importance_path)
-        plt.savefig(self.feature_importance_path + self.fj_model_kind + '_feature_importance')
+        print(raw_model.base_score)
+        # if not os.path.exists(self.feature_importance_path):
+        #     os.makedirs(self.feature_importance_path)
+        # plt.savefig(self.feature_importance_path + self.fj_model_kind + '_feature_importance')
         plt.show()
         plt.close()
         self.save_result_dataframe(y_test, pred, )
@@ -87,11 +113,13 @@ class XgboostModel(ShowAndSave):
 
     def test_model(self, data_kind='fault_data', delta_idx=2):
         self.data_kind = data_kind
-        fault_test_file_path = get_test_data_path(self.fc, self.fj, self.model_kind, self.params_kind)
+        fault_test_file_path = get_train_data_path(self.fc, self.fj, self.model_kind, self.params_kind)
         df = pd.read_csv(fault_test_file_path, encoding='utf-8', index_col=0)
-        data = df.iloc[:, :].values
+        data = df.iloc[50000:60000, :].values
         x = data[:, :-1]
         y = data[:, -1]
+        mean_std_dict=get_mean_std(self.fc,self.fj,self.model_kind)
+        x=data_normalized(x,mean_std_dict)
         xgbr = xgb.XGBRegressor()
         logger.info(self.model_path + self.model_file_name)
         xgbr.load_model(self.model_path + self.model_file_name)
@@ -106,7 +134,7 @@ class XgboostModel(ShowAndSave):
 
     def params_tuned(self):
         xgbr = xgb.XGBRegressor(objective='reg:squarederror')
-        datafile = get_filtered_data_path(self.fc, self.fj, self.model_kind, self.params_kind)
+        datafile = get_train_data_path(self.fc, self.fj, self.model_kind, self.params_kind)
         params = {'max_depth': [16, 32, 48], 'n_estimators': [128, 256, 512], 'min_child_weight': [3]}
         grid = RandomizedSearchCV(xgbr, params, cv=3, scoring='neg_mean_squared_error', n_iter=6)
         df = pd.read_csv(datafile, encoding='utf-8', index_col=0)
@@ -124,16 +152,16 @@ class XgboostModel(ShowAndSave):
         self.xgboostmodel()
         self.test_model()
 
-    def predict(self,x):
+    def predict(self, x):
         xgbr = xgb.XGBRegressor()
-        #logger.info(self.model_path + self.model_file_name)
+        # logger.info(self.model_path + self.model_file_name)
         xgbr.load_model(self.model_path + self.model_file_name)
         pred = xgbr.predict(x)
         return pred
 
 
-xgbm = XgboostModel(jobname='xgb_model_convt', fc='wfzc', fj='A2', model_kind='convt_temp_3',
-                    params_kind='model_params_v2', max_depth=32, n_estimator=300, min_child_weight=1)
+xgbm = XgboostModel(jobname='xgb_model_motor', fc='wfzc', fj='A2', model_kind='motor_temp_2',
+                    params_kind='model_params_v3', max_depth=32, n_estimator=300, min_child_weight=1)
 # xgbm.params_tuned()
 #xgbm.xgboostmodel()
 xgbm.test_model()
