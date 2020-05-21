@@ -141,3 +141,5 @@ class TestA:
 #         print(sess.run([a,b]))
 
 print('when training,train data number:%s' % str(2))
+from model.params_dict import ParamsDict
+print(ParamsDict.model_params)
